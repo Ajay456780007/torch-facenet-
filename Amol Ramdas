@@ -1,0 +1,98 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from keras_facenet import FaceNet
+from tensorflow.keras.layers import MultiHeadAttention
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import lightgbm as lgb
+from Sub_Functions.Load_data import train_test_splitter
+from tensorflow.keras.layers import MultiHeadAttention
+
+from tensorflow.keras import layers, models
+from keras_facenet import FaceNet
+import cv2
+
+
+def build_model(input_shape):
+    # Load Pretrained FaceNet Model
+    # facenet = FaceNet()
+
+    # Define input layer
+    input_layer = layers.Input(shape=input_shape)
+
+    # Resize the images to 160x160 using tf.image.resize (works with tensors)
+    # resized_input = layers.Lambda(lambda x: tf.image.resize(x, (160, 160)))(input_layer)
+
+    # Normalize the images to [-1, 1]
+    # x = (resized_input / 127.5) - 1.0
+    # Add a sequence dimension of 1, shape: (batch_size, 1, 512)
+    x = layers.Reshape((1, 512))(input_layer)
+
+    # Convert the normalized images to numpy array and pass to FaceNet for embeddings
+    # Convert tensor to numpy for FaceNet, as it may not accept tensors directly with dynamic batch size
+    # embeddings_layer = facenet.embeddings(resized_input)  # Shape should be (batch_size, 512)
+
+    # Apply MultiHead Attention on embeddings
+    attention_output = MultiHeadAttention(num_heads=8, key_dim=512)(x, x)
+    attention_output = layers.GlobalAveragePooling1D()(attention_output)
+
+    # Fully connected layer for classification
+    embeddings = layers.Dense(256, activation='relu')(attention_output)
+    # output = layers.Dense(num_classes, activation='softmax')(embeddings)
+
+    # Define and return the model
+    model = models.Model(inputs=input_layer, outputs=embeddings)
+    return model
+
+
+def preprocess_images(images):
+    """
+    Resizes images to 160x160 and normalizes pixel values to [-1, 1]
+    """
+    images_resized = np.array([cv2.resize(image, (160, 160)) for image in images])  # Resize to 160x160
+    images_normalized = (images_resized / 127.5) - 1.0  # Normalize to [-1, 1]
+    return images_normalized
+
+
+# Step 2: Proposed Model Function (Training and Evaluation)
+def proposed_model(x_train, x_test, y_train, y_test, train_percent, DB):
+    # num_classes = len(np.unique(y_train))
+    facenet = FaceNet()
+
+    # Get FaceNet embeddings for the training and testing data
+    x_train_emb = facenet.embeddings(x_train)  # shape: (N, 512)
+    x_test_emb = facenet.embeddings(x_test)
+
+    input_shape = x_train_emb.shape[1:]  # Shape of the embeddings, typically (512,)
+
+    # One-hot encode labels for LightGBM
+    # No need to one-hot encode for LightGBM, just pass raw labels
+    y_train_cat = y_train  # Already categorical labels, no one-hot needed for LightGBM
+    y_test_cat = y_test
+
+    # Build the Keras model (for feature extraction)
+    model = build_model(input_shape)
+
+    # You can skip training the Keras model or fine-tune it if needed
+    # model.fit(x_train_emb, y_train_cat)  # Optional: train Keras model if needed
+
+    # Get embeddings from the trained Keras model
+    train_embeddings = model.predict(x_train_emb)  # Shape: (N, 256)
+    test_embeddings = model.predict(x_test_emb)  # Shape: (M, 256)
+
+    # Train LightGBM model on these embeddings
+    lgbm_model = lgb.LGBMClassifier()
+    lgbm_model.fit(train_embeddings, y_train_cat)
+
+    # Evaluate LightGBM on test embeddings
+    y_pred_lgbm = lgbm_model.predict(test_embeddings)
+    accuracy = accuracy_score(y_test_cat, y_pred_lgbm)
+    print(f"LightGBM Accuracy: {accuracy:.4f}")
+
+    return accuracy
+
+
+x_train, x_test, y_train, y_test = train_test_splitter("MaskedDFER", 0.8)
+metrics_all = proposed_model(x_train, x_test, y_train, y_test, 0.8, "CKPLUS")
+print(metrics_all)
