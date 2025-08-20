@@ -1,0 +1,65 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+import numpy as np
+import lightgbm as lgb
+
+class FaceAttentionExtractor(nn.Module):
+    def __init__(self, facenet):
+        super().__init__()
+        self.facenet = facenet
+        # Find the last conv layer index
+        conv_idxs = [i for i, m in enumerate(self.facenet.modules()) if isinstance(m, nn.Conv2d)]
+        last_conv_idx = list(self.facenet.modules()).index(list(self.facenet.modules())[conv_idxs[-1]])
+        # Sequential up to last conv
+        self.features = nn.Sequential(*list(self.facenet.children())[:last_conv_idx+1])
+        self.mha = nn.MultiheadAttention(embed_dim=512, num_heads=4, dropout=0.1, batch_first=True)
+        self.global_pool = nn.AdaptiveAvgPool1d(1)
+
+    def forward(self, x):
+        # x: (B, 3, 50, 50)
+        feat = self.features(x)  # (B, C, H, W)
+        b, c, h, w = feat.size()
+        feat_flat = feat.view(b, c, -1).transpose(1,2)  # (B, N, C)
+        attn_output, _ = self.mha(feat_flat, feat_flat, feat_flat)
+        pooled = attn_output.mean(dim=1) # (B, C)
+        return pooled
+
+def build_model(device):
+    # Load FaceNet model (provide your loading logic or import here)
+    facenet = load_pretrained_facenet512()  # <-- replace with your function
+    facenet.eval()
+    feature_extractor = FaceAttentionExtractor(facenet).to(device)
+    return feature_extractor
+
+def proposed_model(x_train, y_train, x_test, device):
+    # x_train: np.ndarray of shape (N, 3, 50, 50), y_train: (N,), x_test: (M, 3, 50, 50)
+    model = build_model(device)
+    model.eval()
+    with torch.no_grad():
+        Xtr_torch = torch.tensor(x_train, dtype=torch.float32).to(device)
+        Xts_torch = torch.tensor(x_test, dtype=torch.float32).to(device)
+        X_tr_feat = model(Xtr_torch).cpu().numpy()
+        X_ts_feat = model(Xts_torch).cpu().numpy()
+    # LGBM classifier
+    clf = lgb.LGBMClassifier(objective='multiclass', num_class=7, random_state=42)
+    clf.fit(X_tr_feat, y_train)
+    y_pred = clf.predict(X_ts_feat)
+    return y_pred, clf
+
+# Provide your own FaceNet-512 pretrained model loader here
+def load_pretrained_facenet512():
+    # Example: model = torch.load("facenet512.pth")
+    # Or use load_state_dict/checkpoint with official or open-source weights
+    # For sample, just raise error to guide user
+    raise NotImplementedError("You must implement this function to load your FaceNet-512 model.")
+
+# Example main usage
+if __name__ == "__main__":
+    # Example dummy input
+    # x_train = np.random.randn(8, 3, 50, 50).astype(np.float32)
+    # y_train = np.random.randint(0, 7, 8)
+    # x_test = np.random.randn(2, 3, 50, 50).astype(np.float32)
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # y_pred, clf = proposed_model(x_train, y_train, x_test, device)
+    pass
